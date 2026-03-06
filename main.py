@@ -4,13 +4,13 @@ Highly optimized, asynchronous, and memory-efficient.
 """
 import os
 import re
-import io
+import glob
 import time
 import html
 import signal
+import shutil
 import asyncio
 import logging
-import aiohttp
 from dotenv import load_dotenv
 
 # --- Asynchronous monkey-patch for Pyrogram on Python 3.11+ ---
@@ -101,19 +101,62 @@ async def check_force_sub(client: Client, user_id: int) -> bool | str:
 # Core Utilities
 # ------------------------------------------------------------------
 
-def extract_video_info(url: str) -> dict:
+def extract_video_info(url: str, message_id: int) -> dict:
     """
-    Blocking yt-dlp network call to extract direct metadata and streams.
+    Blocking yt-dlp network call to extract metadata, check sizes, and download/merge to disk.
     Runs inside a thread pool to preserve async event loop responsiveness.
     """
+    os.makedirs("downloads", exist_ok=True)
+    
+    # Dynamically locate FFmpeg to bypass Windows terminal Path un-refreshing
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path and os.name == "nt":
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            matches = glob.glob(os.path.join(localappdata, "Microsoft", "WinGet", "Packages", "*", "*", "bin", "ffmpeg.exe"))
+            if matches:
+                ffmpeg_path = os.path.dirname(matches[0])
+
     ydl_opts = {
-        'format': 'best[ext=mp4]/best', # Guarantees single pre-merged video+audio format avoiding ffmpeg disk I/O
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
+        'outtmpl': f"downloads/{message_id}_%(id)s.%(ext)s",
+        'merge_output_format': 'mp4'
     }
+    
+    if ffmpeg_path:
+        ydl_opts['ffmpeg_location'] = ffmpeg_path
+        
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        return ydl.extract_info(url, download=False)
+        # First extraction to check size limits
+        info = ydl.extract_info(url, download=False)
+        if not info:
+            raise ValueError("Could not extract video info.")
+            
+        filesize = info.get('filesize') or info.get('filesize_approx') or 0
+        if filesize > 50 * 1024 * 1024:
+            raise ValueError("TooLarge")
+            
+        # Download and allow FFmpeg to merge video + audio
+        ydl.download([url])
+        
+        # Locate the downloaded and merged file on disk
+        files = glob.glob(f"downloads/{message_id}_*.*")
+        final_file = None
+        for f in files:
+            # We want to ignore partial parts or unmerged streams
+            if not f.endswith(('.part', '.ytdl', '.webm', '.m4a')):
+                final_file = f
+                break
+        
+        # Fallback if only one file exists
+        if not final_file and files:
+            final_file = files[0]
+            
+        info['filepath'] = final_file
+        return info
 
 async def progress_callback(current: int, total: int, message: Message, start_time: float, action_text: str):
     """
@@ -231,12 +274,24 @@ async def handle_media_links(client: Client, message: Message):
         for url in urls:
             status_msg = await message.reply_text("⏳ <b>Analyzing Link...</b>", parse_mode=ParseMode.HTML, disable_web_page_preview=True)
             try:
-                # Threaded yt-dlp metadata extraction
-                info = await asyncio.to_thread(extract_video_info, url)
-                direct_url = info.get('url')
-                
-                if not direct_url:
-                    raise ValueError("Could not extract a direct video stream URL.")
+                # Threaded yt-dlp metadata extraction and disk download with 5-minute timeout netting
+                try:
+                    info = await asyncio.wait_for(
+                        asyncio.to_thread(extract_video_info, url, message.id), 
+                        timeout=300.0
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    await status_msg.edit_text("❌ <b>Extraction timed out.</b> The server network might be unstable or the file is too large.", parse_mode=ParseMode.HTML)
+                    continue
+                except ValueError as ve:
+                    if str(ve) == "TooLarge":
+                        await status_msg.edit_text("❌ File too large! Please keep links under 50MB to prevent server crashes.", parse_mode=ParseMode.HTML)
+                        continue
+                    raise ve
+                    
+                filepath = info.get('filepath')
+                if not filepath or not os.path.exists(filepath):
+                    raise ValueError("Download failed, file not found on disk.")
                 
                 # Format Premium Metadata
                 title = info.get('title', 'Media Video') or 'Media Video'
@@ -247,30 +302,6 @@ async def handle_media_links(client: Client, message: Message):
                 height = info.get('height', 0)
                 resolution = f"{width}x{height}" if width and height else "Unknown"
                 platform = info.get('extractor_key', 'Unknown')
-                
-                # Asynchronous In-Memory Chunked Download
-                video_buffer = io.BytesIO()
-                video_buffer.name = f"{platform}_{uploader}.mp4" # Required by Pyrogram to recognize media format
-                
-                headers = info.get('http_headers', {})
-                start_time = time.time()
-                
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(direct_url, headers=headers) as response:
-                        response.raise_for_status()
-                        total_size = int(response.headers.get('content-length', 0))
-                        downloaded = 0
-                        
-                        # 1MB chunk sizes perfectly blend speed and loop unblocking
-                        async for chunk in response.content.iter_chunked(1024 * 1024):
-                            video_buffer.write(chunk)
-                            downloaded += len(chunk)
-                            if total_size > 0:
-                                await progress_callback(
-                                    downloaded, total_size, status_msg, start_time, f"📥 <b>Downloading from {platform}...</b>"
-                                )
-                
-                video_buffer.seek(0)
                 
                 # Build rich HTML caption
                 caption_html = (
@@ -288,13 +319,13 @@ async def handle_media_links(client: Client, message: Message):
                     ]
                 ])
                 
-                # Stream from Memory to Telegram API
+                # Stream from Disk to Telegram API
                 await status_msg.edit_text("🚀 <b>Uploading to Telegram...</b>", parse_mode=ParseMode.HTML)
                 start_time = time.time()
                 
                 await client.send_video(
                     chat_id=message.chat.id,
-                    video=video_buffer,
+                    video=filepath,
                     caption=caption_html,
                     duration=int(duration) if duration else 0,
                     reply_markup=inline_kb,
@@ -319,6 +350,13 @@ async def handle_media_links(client: Client, message: Message):
             finally:
                 # Clear tracking
                 last_update_times.pop(status_msg.id, None)
+                # CRITICAL: Disk cleanup for this specific message.id
+                lingering_files = glob.glob(f"downloads/{message.id}_*.*")
+                for f in lingering_files:
+                    try:
+                        os.remove(f)
+                    except Exception as cleanup_err:
+                        logger.warning(f"Failed to delete {f}: {cleanup_err}")
                 
     finally:
         active_tasks.remove(current_task)
