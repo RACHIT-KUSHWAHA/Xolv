@@ -46,13 +46,24 @@ API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 FORCE_SUB_CHANNEL = os.environ.get("FORCE_SUB_CHANNEL", "stuffsroom") # Without the @
 
+# Optional Owner ID for admin restricted commands (e.g. /broadcast)
+try:
+    OWNER_ID = int(os.environ.get("OWNER_ID", 0))
+except ValueError:
+    OWNER_ID = 0
+
 if not all([API_ID, API_HASH, BOT_TOKEN]):
     logger.error("Missing credentials in environment variables. Please check your .env file.")
     exit(1)
 
-# Global states for Graceful Shutdown
+# Global states for Graceful Shutdown and Analytics
 is_shutting_down = False
 active_tasks = set()
+BOT_START_TIME = time.time()
+
+# User Tracking Storage
+USERS_FILE = "users.txt"
+tracked_users = set()
 
 # Regex to detect links from various platforms (Instagram, TikTok, YouTube, Twitter/X, Pinterest, Facebook)
 SUPPORTED_LINKS_REGEX = (
@@ -96,6 +107,24 @@ async def check_force_sub(client: Client, user_id: int) -> bool | str:
         if "CHAT_ADMIN_REQUIRED" in str(e).upper():
             return "admin_required"
         return False
+
+def load_users():
+    """Loads existing unique users from disk into the fast-access set."""
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r") as f:
+            for line in f:
+                try:
+                    tracked_users.add(int(line.strip()))
+                except ValueError:
+                    pass
+    logger.info(f"Loaded {len(tracked_users)} distinct users from database.")
+
+def track_user(user_id: int):
+    """Silently tracks a user id if they are new, appending to disk permanently."""
+    if user_id not in tracked_users:
+        tracked_users.add(user_id)
+        with open(USERS_FILE, "a") as f:
+            f.write(f"{user_id}\n")
 
 # ------------------------------------------------------------------
 # Core Utilities
@@ -204,6 +233,8 @@ async def handle_start_command(client: Client, message: Message):
     """
     Welcomes the user, explains features, and provides links to the Owner.
     """
+    track_user(message.from_user.id)
+    
     welcome_text = (
         "👋 <b>Welcome to the Ultimate Media Downloader Bot!</b>\n\n"
         "I can download videos from multiple platforms in <b>Highest Quality</b> straight to Telegram!\n\n"
@@ -240,6 +271,8 @@ async def handle_media_links(client: Client, message: Message):
     if is_shutting_down:
         await message.reply_text("💤 <b>Bot is shutting down or restarting. Please try again later.</b>", parse_mode=ParseMode.HTML)
         return
+
+    track_user(message.from_user.id)
 
     # 1. Force Subscribe Check
     is_subscribed = await check_force_sub(client, message.from_user.id)
@@ -384,6 +417,75 @@ async def handle_check_join(client: Client, query: CallbackQuery):
     else:
         await client.send_message(query.message.chat.id, "✅ Verified! Please send your link again.")
 
+async def handle_stats_command(client: Client, message: Message):
+    """Public command displaying the bot's health, traffic, and uptime."""
+    track_user(message.from_user.id)
+    
+    # Calculate lively uptime
+    uptime_seconds = int(time.time() - BOT_START_TIME)
+    hours, remainder = divmod(uptime_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    uptime_str = f"{hours}h {minutes}m {seconds}s"
+    
+    stats_text = (
+        "📊 <b>Bot Statistics</b>\n\n"
+        f"👥 <b>Total Users:</b> <code>{len(tracked_users)}</code>\n"
+        f"⚡ <b>Active Downloads:</b> <code>{len(active_tasks)}</code>\n"
+        f"⏱️ <b>Uptime:</b> <code>{uptime_str}</code>\n"
+        f"💻 <b>Ping:</b> <code>{(time.time() - message.date.timestamp()) * 1000:.1f}ms</code>"
+    )
+    await message.reply_text(stats_text, parse_mode=ParseMode.HTML)
+
+async def handle_broadcast_command(client: Client, message: Message):
+    """Owner restricted command to send a message to all tracked users."""
+    if not OWNER_ID or message.from_user.id != OWNER_ID:
+        # Silently ignore unauthorized attempts
+        return
+        
+    broadcast_text = message.text.replace("/broadcast", "").strip()
+    if not broadcast_text:
+        await message.reply_text("⚠️ <b>Usage:</b> <code>/broadcast [your message]</code>", parse_mode=ParseMode.HTML)
+        return
+        
+    status_msg = await message.reply_text(f"🚀 <b>Starting Broadcast to {len(tracked_users)} users...</b>", parse_mode=ParseMode.HTML)
+    
+    success = 0
+    failed = 0
+    start_time = time.time()
+    
+    # Isolate targets (creates a static copy to iterate safely)
+    targets = list(tracked_users)
+    
+    for user_id in targets:
+        try:
+            await client.send_message(
+                chat_id=user_id, 
+                text=broadcast_text,
+                disable_web_page_preview=True
+            )
+            success += 1
+            # Respect Telegram rate limits of 30 msgs/second globally
+            await asyncio.sleep(0.05)
+        except pyrogram.errors.FloodWait as e:
+            # Important: Absolute bypass against Telegram server-side IP blocks
+            await asyncio.sleep(e.value + 1)
+            try:
+                await client.send_message(chat_id=user_id, text=broadcast_text)
+                success += 1
+            except Exception:
+                failed += 1
+        except Exception:
+            failed += 1
+            
+    elapsed = f"{(time.time() - start_time):.2f}"
+    report = (
+        "📣 <b>Broadcast Complete!</b>\n\n"
+        f"✅ <b>Success:</b> <code>{success}</code> users\n"
+        f"❌ <b>Failed/Blocked:</b> <code>{failed}</code> users\n"
+        f"⏱️ <b>Time Taken:</b> <code>{elapsed}s</code>"
+    )
+    await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
+
 # ------------------------------------------------------------------
 # Main Loop and Graceful Shutdown
 # ------------------------------------------------------------------
@@ -407,6 +509,14 @@ async def main():
         filters.command("start") & filters.private
     ))
     app.add_handler(MessageHandler(
+        handle_stats_command,
+        filters.command("stats") & filters.private
+    ))
+    app.add_handler(MessageHandler(
+        handle_broadcast_command,
+        filters.command("broadcast") & filters.private
+    ))
+    app.add_handler(MessageHandler(
         handle_media_links, 
         filters.regex(SUPPORTED_LINKS_REGEX) & filters.private
     ))
@@ -414,6 +524,9 @@ async def main():
         handle_check_join,
         filters.regex("^check_join$")
     ))
+    
+    # Hydrate tracked users at boot
+    load_users()
     
     logger.info("Starting Telegram Bot...")
     await app.start()
