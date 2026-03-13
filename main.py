@@ -138,12 +138,16 @@ def extract_video_info(url: str, message_id: int) -> dict:
                 ffmpeg_path = os.path.dirname(matches[0])
 
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
         'quiet': True,
         'no_warnings': True,
         'geo_bypass': True,
         'outtmpl': f"downloads/{message_id}_%(id)s.%(ext)s",
-        'merge_output_format': 'mp4'
+        'merge_output_format': 'mp4',
+        'http_chunk_size': 10485760,
+        'concurrent_fragment_downloads': 1,
+        'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast'],
+        'username': 'oauth2'
     }
     
     # Load authentication cookies if provided to bypass Instagram/YouTube rate limits
@@ -158,10 +162,6 @@ def extract_video_info(url: str, message_id: int) -> dict:
         info = ydl.extract_info(url, download=False)
         if not info:
             raise ValueError("Could not extract video info.")
-            
-        filesize = info.get('filesize') or info.get('filesize_approx') or 0
-        if filesize > 50 * 1024 * 1024:
-            raise ValueError("TooLarge")
             
         # Hardened Thumbnail Logic: Prefer high-quality static images
         if 'thumbnails' in info and info['thumbnails']:
@@ -306,9 +306,6 @@ async def handle_media_links(client: Client, message: Message):
                         await status_msg.edit_text("❌ <b>Extraction timed out.</b> The server network might be unstable.", parse_mode=ParseMode.HTML)
                         continue
                     except ValueError as ve:
-                        if str(ve) == "TooLarge":
-                            await status_msg.edit_text("❌ File too large! Please keep links under 50MB to prevent server crashes.", parse_mode=ParseMode.HTML)
-                            continue
                         raise ve
                         
                     await status_msg.edit_text("📥 <b>Downloading to Server Disk...</b>", parse_mode=ParseMode.HTML)
@@ -316,10 +313,14 @@ async def handle_media_links(client: Client, message: Message):
                     # Re-build the options exactly as extract_video_info did to funnel the download
                     ffmpeg_path = shutil.which("ffmpeg")
                     ydl_opts = {
-                        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
                         'quiet': True, 'no_warnings': True, 'geo_bypass': True,
                         'outtmpl': f"downloads/{message.id}_%(id)s.%(ext)s",
-                        'merge_output_format': 'mp4'
+                        'merge_output_format': 'mp4',
+                        'http_chunk_size': 10485760,
+                        'concurrent_fragment_downloads': 1,
+                        'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast'],
+                        'username': 'oauth2'
                     }
                     if os.path.exists("cookies.txt"): ydl_opts['cookiefile'] = "cookies.txt"
                     if ffmpeg_path: ydl_opts['ffmpeg_location'] = ffmpeg_path
@@ -330,50 +331,82 @@ async def handle_media_links(client: Client, message: Message):
                 if not filepath or not os.path.exists(filepath):
                     raise ValueError("Download failed, file not found on disk.")
                 
-                # Format Funky Minimal Metadata
-                title = info.get('title', 'Media Result')
-                platform = info.get('extractor_key', 'Link')
-                duration = info.get('duration', 0)
-                
-                # Funky caption
-                caption_html = (
-                    f"✨ <b>{html.escape(title[:60])}</b>\n"
-                    f"🏷️ <code>{platform}</code>\n\n"
-                    f"💎 <b>{XOLV_BRAND} Elite</b>"
-                )
-                
-                inline_kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🌐 Download via Browser", url="https://xolv.beyondrachit.me")],
-                    [
-                        InlineKeyboardButton("🔗 Origin", url=url),
-                        InlineKeyboardButton("➕ Support", url=f"https://{SUPPORT_GRP}")
-                    ]
-                ])
-                
-                # Stream from Disk to Telegram API
-                await status_msg.edit_text("🚀 <b>Uploading to Telegram...</b>", parse_mode=ParseMode.HTML)
-                start_time = time.time()
-                
-                await client.send_video(
-                    chat_id=message.chat.id,
-                    video=filepath,
-                    caption=caption_html,
-                    duration=int(duration) if duration else 0,
-                    reply_markup=inline_kb,
-                    reply_to_message_id=message.id,
-                    parse_mode=ParseMode.HTML,
-                    progress=progress_callback,
-                    progress_args=(status_msg, start_time, "🚀 <b>Uploading to Telegram...</b>")
-                )
-                
-                # Auto-Cleanup User's Link Message for aesthetics (Silently ignore if unauthorized)
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
-                
-                # Cleanup Progress UI
-                await status_msg.delete()
+                file_size = os.path.getsize(filepath)
+                if file_size > 50 * 1024 * 1024:
+                    dest_dir = "/var/www/xolv/downloads/"
+                    os.makedirs(dest_dir, exist_ok=True)
+                    filename = os.path.basename(filepath)
+                    dest_path = os.path.join(dest_dir, filename)
+                    shutil.move(filepath, dest_path)
+                    
+                    public_url = f"https://xolv.beyondrachit.me/dl/{filename}"
+                    title = info.get('title', 'Media Result')
+                    platform = info.get('extractor_key', 'Link')
+                    
+                    caption_html = (
+                        f"✨ <b>{html.escape(title[:60])}</b>\n"
+                        f"🏷️ <code>{platform}</code>\n\n"
+                        f"📦 <b>File too large for Telegram ({file_size // (1024*1024)}MB).</b>\n"
+                        f"🔗 <b>Download Link:</b> <a href='{public_url}'>Click Here to Download</a>\n\n"
+                        f"💎 <b>{XOLV_BRAND} Elite</b>"
+                    )
+                    
+                    inline_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🌐 Direct Download", url=public_url)],
+                        [InlineKeyboardButton("🔗 Origin", url=url), InlineKeyboardButton("➕ Support", url=f"https://{SUPPORT_GRP}")]
+                    ])
+                    
+                    await status_msg.edit_text(caption_html, parse_mode=ParseMode.HTML, reply_markup=inline_kb)
+                    
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                else:
+                    # Format Funky Minimal Metadata
+                    title = info.get('title', 'Media Result')
+                    platform = info.get('extractor_key', 'Link')
+                    duration = info.get('duration', 0)
+                    
+                    # Funky caption
+                    caption_html = (
+                        f"✨ <b>{html.escape(title[:60])}</b>\n"
+                        f"🏷️ <code>{platform}</code>\n\n"
+                        f"💎 <b>{XOLV_BRAND} Elite</b>"
+                    )
+                    
+                    inline_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🌐 Download via Browser", url="https://xolv.beyondrachit.me")],
+                        [
+                            InlineKeyboardButton("🔗 Origin", url=url),
+                            InlineKeyboardButton("➕ Support", url=f"https://{SUPPORT_GRP}")
+                        ]
+                    ])
+                    
+                    # Stream from Disk to Telegram API
+                    await status_msg.edit_text("🚀 <b>Uploading to Telegram...</b>", parse_mode=ParseMode.HTML)
+                    start_time = time.time()
+                    
+                    await client.send_video(
+                        chat_id=message.chat.id,
+                        video=filepath,
+                        caption=caption_html,
+                        duration=int(duration) if duration else 0,
+                        reply_markup=inline_kb,
+                        reply_to_message_id=message.id,
+                        parse_mode=ParseMode.HTML,
+                        progress=progress_callback,
+                        progress_args=(status_msg, start_time, "🚀 <b>Uploading to Telegram...</b>")
+                    )
+                    
+                    # Auto-Cleanup User's Link Message for aesthetics (Silently ignore if unauthorized)
+                    try:
+                        await message.delete()
+                    except Exception:
+                        pass
+                    
+                    # Cleanup Progress UI
+                    await status_msg.delete()
                 
             except Exception as e:
                 logger.error(f"Error processing {url}: {e}", exc_info=True)
@@ -498,7 +531,8 @@ async def handle_inline_query(client: Client, query: InlineQuery):
                 timeout=20.0
             )
             
-        if "TooLarge" in str(info):
+        filesize = info.get('filesize') or info.get('filesize_approx') or 0
+        if filesize > 50 * 1024 * 1024:
             return # Can't inline stream >50MB cleanly
             
         title = info.get('title', 'Media Result')
@@ -567,7 +601,8 @@ async def api_extract_media(req: ExtractionRequest):
                 timeout=45.0
             )
 
-        if "TooLarge" in str(info):
+        filesize = info.get('filesize') or info.get('filesize_approx') or 0
+        if filesize > 50 * 1024 * 1024:
             raise HTTPException(status_code=400, detail="File too large for direct web extraction (>50MB).")
 
         # Sort and filter for the best playable combined format
@@ -626,6 +661,23 @@ async def api_extract_media(req: ExtractionRequest):
 # Main Loop and Graceful Shutdown
 # ------------------------------------------------------------------
 
+async def cleanup_task():
+    """Background task to delete files older than 24 hours from public downloads."""
+    dest_dir = "/var/www/xolv/downloads/"
+    while True:
+        try:
+            if os.path.exists(dest_dir):
+                now = time.time()
+                for filename in os.listdir(dest_dir):
+                    file_path = os.path.join(dest_dir, filename)
+                    if os.path.isfile(file_path):
+                        if os.stat(file_path).st_mtime < now - 24 * 3600:
+                            os.remove(file_path)
+                            logger.info(f"Deleted old file: {file_path}")
+        except Exception as e:
+            logger.error(f"Cleanup task error: {e}")
+        await asyncio.sleep(3600)
+
 async def main():
     global is_shutting_down, DOWNLOAD_SEMAPHORE
     
@@ -673,7 +725,8 @@ async def main():
     fastapi_task = loop.create_task(server.serve())
     logger.info("⚡ Web Dashboard launched on port 8000.")
 
-    logger.info("⚡ Web Dashboard launched on port 8000.")
+    # Start cleanup task
+    cleanup_bg_task = loop.create_task(cleanup_task())
 
     # Use pyrogram.idle() to gracefully block and handle signals while dispatching updates
     await idle()
@@ -685,6 +738,7 @@ async def main():
 
     server.should_exit = True
     await fastapi_task
+    cleanup_bg_task.cancel()
     await app.stop()
     logger.info("Cleanup complete. Container exiting.")
 
