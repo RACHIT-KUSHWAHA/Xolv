@@ -138,55 +138,8 @@ def extract_video_info(url: str, message_id: int) -> dict:
             if matches:
                 ffmpeg_path = os.path.dirname(matches[0])
 
-    # HIGH-RISK Playwright Headless Browser Bypass for YouTube
-    playwright_cookie_file = None
-    if "youtube.com" in url or "youtu.be" in url:
-        try:
-            from playwright.async_api import async_playwright
-            import tempfile
-            
-            async def get_cookies():
-                async with async_playwright() as p:
-                    args = [
-                        '--disable-dev-shm-usage',
-                        '--no-sandbox',
-                        '--disable-gpu',
-                        '--single-process',
-                        '--disable-blink-features=AutomationControlled'
-                    ]
-                    browser = await p.chromium.launch(headless=True, args=args)
-                    context = await browser.new_context()
-                    page = await context.new_page()
-                    await page.goto(url)
-                    await page.wait_for_timeout(5000)
-                    cookies = await context.cookies()
-                    await browser.close()
-                    return cookies
-            
-            # Since extract_video_info natively runs in an asyncio.to_thread context, 
-            # we must create a new event loop to safely await the playwright task internally.
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            cookies = loop.run_until_complete(get_cookies())
-            loop.close()
-            
-            if cookies:
-                # Write standard Netscape cookie file
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as cf:
-                    cf.write("# Netscape HTTP Cookie File\n")
-                    for c in cookies:
-                        domain = c.get('domain', '')
-                        flag = 'TRUE' if domain.startswith('.') else 'FALSE'
-                        path = c.get('path', '/')
-                        secure = 'TRUE' if c.get('secure', False) else 'FALSE'
-                        expires = str(int(c.get('expires', -1)))
-                        name = c.get('name', '')
-                        value = c.get('value', '')
-                        cf.write(f"{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n")
-                    playwright_cookie_file = cf.name
-        except Exception as e:
-            logger.warning(f"Playwright bypass failed or OOM: {e}")
-            raise ValueError("YouTube downloads are temporarily overloaded. Please try again later.")
+    if 'youtube.com' in url or 'youtu.be' in url:
+        raise ValueError('❌ YouTube is currently restricted to save server resources. Use me for Instagram, TikTok & Twitter! 🚀')
 
     ydl_opts = {
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
@@ -198,14 +151,8 @@ def extract_video_info(url: str, message_id: int) -> dict:
         'http_chunk_size': 10485760,
         'concurrent_fragment_downloads': 1,
         'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast'],
-        'cookiefile': playwright_cookie_file if playwright_cookie_file else 'cookies.txt',
-        'forced_ipv4': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tvhtml5', 'web_embedded'], 
-                'player_skip': ['web', 'mweb', 'android', 'ios']
-            }
-        }
+        'cookiefile': 'cookies.txt',
+        'forced_ipv4': True
     }
     
     if ffmpeg_path:
@@ -223,12 +170,6 @@ def extract_video_info(url: str, message_id: int) -> dict:
             static_thumbs = [t for t in info['thumbnails'] if t.get('url') and not t.get('url', '').endswith(('.webp', '.m3u8'))]
             if static_thumbs:
                 info['thumbnail'] = sorted(static_thumbs, key=lambda x: (x.get('width', 0) or 0), reverse=True)[0]['url']
-            
-        if playwright_cookie_file and os.path.exists(playwright_cookie_file):
-            try:
-                os.remove(playwright_cookie_file)
-            except Exception:
-                pass
                 
         return info
 
@@ -304,7 +245,7 @@ async def handle_start_command(client: Client, message: Message):
     welcome_text = (
         f"💎 <b>{XOLV_BRAND} Boutique</b>\n"
         "〰〰〰〰〰〰〰〰〰〰\n"
-        "The fastest way to catch media from Instagram, TikTok, YouTube & more.\n\n"
+        "The #1 Social Media Reels & Shorts Specialist.\n\n"
         "✨ <b>Features:</b>\n"
         "• No Ads, No Friction\n"
         "• Highest Quality\n"
@@ -382,13 +323,7 @@ async def handle_media_links(client: Client, message: Message):
                         'concurrent_fragment_downloads': 1,
                         'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast'],
                         'cookiefile': 'cookies.txt',
-                        'forced_ipv4': True,
-                        'extractor_args': {
-                            'youtube': {
-                                'player_client': ['tvhtml5', 'web_embedded'], 
-                                'player_skip': ['web', 'mweb', 'android', 'ios']
-                            }
-                        }
+                        'forced_ipv4': True
                     }
                     if ffmpeg_path: ydl_opts['ffmpeg_location'] = ffmpeg_path
                     
