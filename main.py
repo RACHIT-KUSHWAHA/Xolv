@@ -245,11 +245,12 @@ async def handle_start_command(client: Client, message: Message):
     welcome_text = (
         f"💎 <b>{XOLV_BRAND} Boutique</b>\n"
         "〰〰〰〰〰〰〰〰〰〰\n"
-        "The #1 Social Media Reels & Shorts Specialist.\n\n"
-        "✨ <b>Features:</b>\n"
-        "• No Ads, No Friction\n"
-        "• Highest Quality\n"
-        "• OLED Aesthetic\n\n"
+        "The <b>#1 Social Media Reels & Shorts Specialist</b>.\n\n"
+        "✨ <b>Supported Platforms:</b>\n"
+        "<code>• Instagram (Reels & Posts)</code>\n"
+        "<code>• TikTok</code>\n"
+        "<code>• Twitter (X)</code>\n\n"
+        "⚠️ <b>Note:</b> <i>YouTube is currently completely restricted to save server resources.</i>\n\n"
         "🚀 <b>Just send me a link to catch it!</b>\n\n"
         f"👨‍💻 <b>Owner:</b> {OWNER_USER}"
     )
@@ -374,8 +375,12 @@ async def handle_media_links(client: Client, message: Message):
                     caption_html = (
                         f"✨ <b>{html.escape(title[:60])}</b>\n"
                         f"🏷️ <code>{platform}</code>\n\n"
-                        f"💎 <b>{XOLV_BRAND} Elite</b>"
+                        f"💎 <b>{XOLV_BRAND} Elite</b>\n"
+                        "📥 Downloaded via @XolvBot"
                     )
+                    
+                    # Add console log summarizing the platform extraction for analytics
+                    logger.info(f"User {message.from_user.id} downloaded a {platform} video.")
                     
                     inline_kb = InlineKeyboardMarkup([
                         [InlineKeyboardButton("🌐 Download via Browser", url="https://xolv.beyondrachit.me")],
