@@ -131,32 +131,39 @@ def extract_video_info(url: str, message_id: int) -> dict:
     
     # --- Cobalt API Fallback for YouTube ---
     if "youtube.com" in url or "youtu.be" in url:
-        try:
-            cobalt_url = "https://api.cobalt.tools/api/json"
-            headers = {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'Origin': 'https://cobalt.tools',
-                'Referer': 'https://cobalt.tools/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-            payload = {'url': url}
-            
-            response = requests.post(cobalt_url, headers=headers, json=payload, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                if 'url' in data:
-                    return {
-                        'url': data['url'],
-                        'title': 'YouTube Video',
-                        'extractor_key': 'youtube',
-                        'filesize_approx': 0,
-                        'duration': 0
-                    }
-            raise ValueError("YouTube downloads are temporarily overloaded. Please try again later.")
-        except Exception as e:
-            logger.warning(f"Cobalt API failed for {url}: {e}")
-            raise ValueError("YouTube downloads are temporarily overloaded. Please try again later.")
+        cobalt_nodes = [
+            'https://co.wuk.sh/api/json',
+            'https://cobalt.q0.wtf/api/json',
+            'https://api.cobalt.tools/api/json'
+        ]
+        
+        headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Origin': 'https://cobalt.tools',
+            'Referer': 'https://cobalt.tools/',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        payload = {'url': url}
+        
+        for cobalt_url in cobalt_nodes:
+            try:
+                response = requests.post(cobalt_url, headers=headers, json=payload, timeout=7)
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'url' in data:
+                        return {
+                            'url': data['url'],
+                            'title': 'YouTube Video',
+                            'extractor_key': 'youtube',
+                            'filesize_approx': 0,
+                            'duration': 0
+                        }
+            except Exception as e:
+                logger.warning(f"Cobalt API node {cobalt_url} failed: {e}")
+                continue
+                
+        raise ValueError("All backup download servers are currently blocked by YouTube. Please try again later.")
     # ---------------------------------------
     
     # Dynamically locate FFmpeg to bypass Windows terminal Path un-refreshing
