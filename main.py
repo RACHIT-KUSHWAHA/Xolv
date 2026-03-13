@@ -129,54 +129,6 @@ def extract_video_info(url: str, message_id: int) -> dict:
     """
     os.makedirs("downloads", exist_ok=True)
     
-    # --- Invidious API Fallback for YouTube ---
-    if "youtube.com" in url or "youtu.be" in url:
-        video_id_match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11})', url)
-        if video_id_match:
-            video_id = video_id_match.group(1)
-            invidious_nodes = [
-                'https://vid.puffyan.us',
-                'https://inv.tux.pizza',
-                'https://invidious.weblibre.org',
-                'https://invidious.lunar.icu'
-            ]
-            
-            for node in invidious_nodes:
-                try:
-                    response = requests.get(f"{node}/api/v1/videos/{video_id}", timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        stream_url = None
-                        
-                        if 'formatStreams' in data:
-                            streams = data['formatStreams']
-                            # Try to find exactly MP4 720p
-                            for stream in streams:
-                                if stream.get('container') == 'mp4' and stream.get('resolution') == '720p':
-                                    stream_url = stream.get('url')
-                                    break
-                            
-                            # Fallback to the first available MP4 stream
-                            if not stream_url:
-                                for stream in streams:
-                                    if stream.get('container') == 'mp4':
-                                        stream_url = stream.get('url')
-                                        break
-                                        
-                        if stream_url:
-                            return {
-                                'url': stream_url,
-                                'title': data.get('title', 'YouTube Video'),
-                                'extractor_key': 'youtube',
-                                'filesize_approx': 0,
-                                'duration': data.get('lengthSeconds', 0)
-                            }
-                except Exception as e:
-                    logger.warning(f"Invidious API node {node} failed: {e}")
-                    continue
-                    
-            raise ValueError("All underground servers are currently blocked. Try again later.")
-    
     # Dynamically locate FFmpeg to bypass Windows terminal Path un-refreshing
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path and os.name == "nt":
@@ -196,7 +148,8 @@ def extract_video_info(url: str, message_id: int) -> dict:
         'http_chunk_size': 10485760,
         'concurrent_fragment_downloads': 1,
         'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast'],
-        'cookiefile': 'cookies.txt'
+        'cookiefile': 'cookies.txt',
+        'proxy': 'socks5://127.0.0.1:40000'
     }
     
     if ffmpeg_path:
@@ -218,23 +171,8 @@ def extract_video_info(url: str, message_id: int) -> dict:
         return info
 
 def download_video_to_disk(url: str, message_id: int, opts: dict, extract_info: dict = None) -> str:
-    """Distinctly downloads the file to disk using yt-dlp or direct requests if fetched via Cobalt."""
+    """Distinctly downloads the file to disk using yt-dlp."""
     os.makedirs("downloads", exist_ok=True)
-    
-    if extract_info and extract_info.get('extractor_key') == 'youtube' and extract_info.get('url'):
-        # Cobalt API returned a direct download link, use requests to download it
-        direct_url = extract_info['url']
-        final_file = f"downloads/{message_id}_cobalt.mp4"
-        try:
-            response = requests.get(direct_url, stream=True, timeout=60)
-            response.raise_for_status()
-            with open(final_file, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            return final_file
-        except Exception as e:
-            logger.warning(f"Direct Invidious download failed: {e}")
-            raise ValueError("All underground servers are currently blocked. Try again later.")
     
     with yt_dlp.YoutubeDL(opts) as ydl:
         ydl.download([url])
@@ -381,7 +319,8 @@ async def handle_media_links(client: Client, message: Message):
                         'http_chunk_size': 10485760,
                         'concurrent_fragment_downloads': 1,
                         'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast'],
-                        'cookiefile': 'cookies.txt'
+                        'cookiefile': 'cookies.txt',
+                        'proxy': 'socks5://127.0.0.1:40000'
                     }
                     if ffmpeg_path: ydl_opts['ffmpeg_location'] = ffmpeg_path
                     
