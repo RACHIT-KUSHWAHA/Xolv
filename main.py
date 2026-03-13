@@ -146,12 +146,9 @@ def extract_video_info(url: str, message_id: int) -> dict:
         'merge_output_format': 'mp4',
         'http_chunk_size': 10485760,
         'concurrent_fragment_downloads': 1,
-        'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast']
+        'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast'],
+        'extractor_args': {'youtube': ['player_client=android,ios']}
     }
-    
-    # Load authentication cookies if provided to bypass Instagram/YouTube rate limits
-    if os.path.exists("cookies.txt"):
-        ydl_opts['cookiefile'] = "cookies.txt"
     
     if ffmpeg_path:
         ydl_opts['ffmpeg_location'] = ffmpeg_path
@@ -318,9 +315,9 @@ async def handle_media_links(client: Client, message: Message):
                         'merge_output_format': 'mp4',
                         'http_chunk_size': 10485760,
                         'concurrent_fragment_downloads': 1,
-                        'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast']
+                        'postprocessor_args': ['-threads', '1', '-preset', 'ultrafast'],
+                        'extractor_args': {'youtube': ['player_client=android,ios']}
                     }
-                    if os.path.exists("cookies.txt"): ydl_opts['cookiefile'] = "cookies.txt"
                     if ffmpeg_path: ydl_opts['ffmpeg_location'] = ffmpeg_path
                     
                     filepath = await asyncio.to_thread(download_video_to_disk, url, message.id, ydl_opts)
